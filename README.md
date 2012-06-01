@@ -6,6 +6,7 @@ An(other) authentication library for CodeIgniter. This one uses HTTP Digest auth
 
 ## Installation
 
+### Database
 You'll need a DB table called `users`. It needs to be accessible via CI's activerecord implementation. This works:
 
     CREATE TABLE `users` (
@@ -17,6 +18,14 @@ You'll need a DB table called `users`. It needs to be accessible via CI's active
     ) ENGINE=MyISAM  DEFAULT CHARSET=utf8 AUTO_INCREMENT=2 ;
 
 Edit it as required -- there should probably be some more indexes on there.
+
+`password` is a HTTP digest hash:
+
+    md5('username' . ':' . $realm_name . ':' . $password);
+
+For now you'll have to generate your own, but I'm adding basic user management functionality soon.
+
+### Files
 
 Copy `digestauth.php` to `application/libraries`. That's pretty much it.
 
