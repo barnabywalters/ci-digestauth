@@ -1,40 +1,5 @@
 <?php  if ( ! defined('BASEPATH')) exit('No direct script access allowed');
 
-/**
-
-Usage:
-
-// User creation
-$this -> digestauth -> create_user('username', 'realm', 'password');
-// Call this method for each username/realm combination.
-
-// Auth Process
-$this -> digestauth -> set_realm('Restricted Area');
-$this -> digestauth -> require_user('username'); // Optional
-$auth = $this -> digestauth -> authenticate() // returns an object or BOOL false
-if (!empty($auth)) // Must be called before 
-{
-	// Successful. Print results.
-	// Default
-	echo $auth -> realm; // 'Restricted Area'
-	echo $auth -> username; // 'username'
-	
-	// Custom (note prefix)
-	echo $auth -> x_role; // Custom variable 'role', e.g. 'admin', 'editor', 'guest'
-	echo $auth -> x_permissions; // ditto, e.g. 'rw', 'r'
-}
-else
-{
-	// Not successful
-}
-
-// Alternative to calling set_realm and require_user:
-$auth - $this -> digestauth -> authenticate('Restricted Area');
-// or
-$auth - $this -> digestauth -> authenticate('Restricted Area', 'username');
-
-*/
-
 class digestauth
 {
 	// !ivars
