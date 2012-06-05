@@ -40,6 +40,7 @@ class digestauth
 	// !ivars
 	var $realm;
 	var $required_user; // String or array
+	var $user; // Details of the current user (as returned by -> auth()) or false if not logged in
 	
 	var $tbl_name; // name of the table that user data is stored in. Defaults to 'users'
 	protected $ci; // local CI instance
@@ -52,6 +53,9 @@ class digestauth
 		
 		// Set tbl_name (defaults to 'users')
 		$this -> tbl_name = (empty($config['tbl_name'])) ? 'users' : $config['tbl_name'];
+		
+		// No-one's logged in already
+		$this -> user = false;
 	}
 	
 	// !methods
@@ -75,17 +79,17 @@ class digestauth
 	protected function http_digest_parse($txt)
 	{
 		// protect against missing data
-	    $needed_parts = array('nonce'=>1, 'nc'=>1, 'cnonce'=>1, 'qop'=>1, 'username'=>1, 'uri'=>1, 'response'=>1);
+	    $needed_parts = array('nonce' => 1, 'nc' => 1, 'cnonce' => 1, 'qop' => 1, 'username' => 1, 'uri' => 1, 'response' => 1);
 	    $data = array();
 	    $keys = implode('|', array_keys($needed_parts));
-	
+		
 	    preg_match_all('@(' . $keys . ')=(?:([\'"])([^\2]+?)\2|([^\s,]+))@', $txt, $matches, PREG_SET_ORDER);
-	
+		
 	    foreach ($matches as $m) {
 	        $data[$m[1]] = $m[3] ? $m[3] : $m[4];
 	        unset($needed_parts[$m[1]]);
 	    }
-	
+		
 	    return $needed_parts ? false : $data;
 	}
 	
@@ -123,23 +127,38 @@ class digestauth
 		if (empty($this -> realm))
 		{
 			// No valid realm, cannot perform auth
-			// TODO: Just returning false is not enough, we need to log an actual error
-			return false;
+			show_error('No realm provided for auth!');
+			return (object) array('status' => 'invalid');
 		}
 		
-		// Send Auth headers
-		if (empty($_SERVER['PHP_AUTH_DIGEST']))
+		// Check for auth headers, send if they're not there
+		// Get auth headers
+		$auth_headers = ''; // Default to empty string
+		if (!empty($_SERVER['PHP_AUTH_DIGEST']))
 		{
-		    header('HTTP/1.1 401 Unauthorized');
-		    header('WWW-Authenticate: Digest realm="' . $this -> realm.
-		           '",qop="auth",nonce="' . uniqid() . '",opaque="' . md5($this -> realm) . '"');
-		
-		    die('Text to send if user hits Cancel button');
+			// headers sent AND running as an apache module
+			$auth_headers = $_SERVER['PHP_AUTH_DIGEST'];
+		}
+		else if (!empty($_ENV['REDIRECT_HTTP_AUTHORIZATION']))
+		{
+			// headers sent AND running under CGI
+			
+			// Should probably check for digest vs basic here
+			
+			$auth_headers = $_ENV['REDIRECT_HTTP_AUTHORIZATION'];
 		}
 		
-		// Parse headers
-		$data = $this -> http_digest_parse($_SERVER['PHP_AUTH_DIGEST']);
-		if (empty($data)) return false; // Bad credentials. TODO: What sort of meaningful error can we give here?
+		if (empty($auth_headers) OR $this -> ci -> session -> flashdata('auth_status') == 'invalid')
+		{
+		    $this -> ci -> output -> set_header('HTTP/1.1 401 Unauthorized');
+		    $this -> ci -> output -> set_header('WWW-Authenticate: Digest realm="' . $this -> realm.
+				'",qop="auth",nonce="' . uniqid() . '",opaque="' . md5($this -> realm) . '"');
+		    
+		    return (object) array('status' => 'initial');
+		}
+		
+		// Parse auth headers
+		if (!($data = $this -> http_digest_parse($auth_headers))) return (object) array('status' => 'invalid', 'message' => 'invalid_http_data'); // Bad credentials. TODO: What sort of meaningful error can we give here?
 		
 		// Check to see if the client user matches any required_user given
 		if (!empty($this -> required_user))
@@ -153,7 +172,11 @@ class digestauth
 			}
 			
 			// Check $data['username'] against $this -> required_user
-			if (!in_array($data['username'], $this -> required_user)) return false;
+			if (!in_array($data['username'], $this -> required_user))
+			{
+				$this -> ci -> session -> set_flashdata('auth_status', 'invalid');
+				return (object) array('status' => 'invalid', 'message' => 'user_not_permitted');
+			}
 		}
 		
 		// Check user data against db
@@ -161,35 +184,49 @@ class digestauth
 			-> where('username', $data['username'])
 			-> where('realm', $this -> realm) -> get();
 		
-		if ($query -> num_rows() !== 1) return false;
+		if ($query -> num_rows() !== 1)
+		{
+			$this -> ci -> session -> set_flashdata('auth_status', 'invalid');
+			return (object) array('status' => 'invalid', 'message' => 'invalid_user');
+		}
 		
 		// Get hash
 		$user_hash = $query -> row() -> password;
 		
 		// Compute valid response (code stolen from http://www.php.net/manual/en/features.http-auth.php -- thanks!
-		$A2 = md5($_SERVER['REQUEST_METHOD'].':'.$data['uri']);
-		$valid_response = md5($user_hash.':'.$data['nonce'].':'.$data['nc'].':'.$data['cnonce'].':'.$data['qop'].':'.$A2);
+		$A2 = md5($_SERVER['REQUEST_METHOD'] . ':' .$data['uri']);
+		$valid_response = md5($user_hash . ':' . $data['nonce'] . ':' . $data['nc'] . ':' . $data['cnonce'] . ':' . $data['qop'] . ':' . $A2);
 		
 		// Correct?
-		if ($data['response'] !== $valid_response) return false;
+		if ($data['response'] !== $valid_response)
+		{
+			$this -> ci -> session -> set_flashdata('auth_status', 'invalid');
+			return (object) array('status' => 'invalid', 'message' => 'invalid_password');
+		}
 		
-		// Return result
-		$return = $query -> row();
-		// TODO: Anything else needed in this array?
-		return $return;
+		// Store current user details
+		$this -> user = $query -> row();
+		
+		// Result
+		return (object) array('status' => 'logged_in');
+	}
+	
+	/**
+	*	(In theory) logs out the current user.
+	*	Sends HTTP headers so must be called before any are sent by the rest of the script
+	*/
+	public function logout()
+	{
+		// Remove current user details
+		$this -> user = false;
+		
+		// Send 401 header to clear auth chache (in most cases)
+		$this -> ci -> session -> set_flashdata('auth_status', 'invalid');
+		$this -> ci -> output -> set_header('HTTP/1.1 401 Unauthorized');
+		$this -> ci -> output -> set_header('WWW-Authenticate: Digest realm="' . $this -> realm.
+				'",qop="auth",nonce="' . uniqid() . '",opaque="' . md5($this -> realm) . '"');
 	}
 	
 }
-
-/*
-// Select from db
-		$this -> ci -> db -> from($this -> tbl_name);
-		foreach ($this -> required_user as $user)
-		{
-			$this -> ci -> db -> or_where('username', $user);
-		}
-		
-		$query = $this -> ci -> db -> get();
-*/
 
 /* EOF digestauth.php */
